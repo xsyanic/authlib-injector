@@ -33,6 +33,8 @@ import java.io.UncheckedIOException;
 import java.lang.instrument.Instrumentation;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -121,6 +123,74 @@ public final class AuthlibInjector {
 		return Optional.ofNullable(prefetched);
 	}
 
+	private static Path getCacheDirectory() {
+		// Use Minecraft instance folder: {instance}/assets/cache_authlib/
+		String userDir = System.getProperty("user.dir");
+		Path cacheDir = Paths.get(userDir, "assets", "cache_authlib");
+		try {
+			Files.createDirectories(cacheDir);
+		} catch (IOException e) {
+			log(WARNING, "Failed to create cache directory: " + cacheDir + ", " + e);
+		}
+		return cacheDir;
+	}
+
+	private static Path getMetadataCachePath(String apiUrl) {
+		// Create a cache file path based on API URL hash
+		int hash = Math.abs(apiUrl.hashCode());
+		return getCacheDirectory().resolve("authlib-injector-metadata-" + hash + ".cache");
+	}
+
+	private static Optional<String> getCachedMetadata(Path cachePath) {
+		try {
+			if (Files.exists(cachePath)) {
+				String cached = new String(Files.readAllBytes(cachePath), UTF_8);
+				log(INFO, "Using cached metadata from: " + cachePath);
+				return Optional.of(cached);
+			}
+		} catch (IOException e) {
+			log(WARNING, "Failed to read cached metadata: " + e);
+		}
+		return Optional.empty();
+	}
+
+	private static void cacheMetadata(Path cachePath, String metadata) {
+		try {
+			Files.write(cachePath, metadata.getBytes(UTF_8));
+			log(DEBUG, "Cached metadata to: " + cachePath);
+		} catch (IOException e) {
+			log(WARNING, "Failed to cache metadata: " + e);
+		}
+	}
+
+	private static Path getMetadataCacheLocationPath(String apiUrl) {
+		// Create a cache file path for storing the final API location
+		int hash = Math.abs(apiUrl.hashCode());
+		return getCacheDirectory().resolve("authlib-injector-location-" + hash + ".cache");
+	}
+
+	private static Optional<String> getCachedApiLocation(Path locationPath) {
+		try {
+			if (Files.exists(locationPath)) {
+				String cached = new String(Files.readAllBytes(locationPath), UTF_8);
+				log(DEBUG, "Using cached API location from: " + locationPath);
+				return Optional.of(cached);
+			}
+		} catch (IOException e) {
+			log(WARNING, "Failed to read cached API location: " + e);
+		}
+		return Optional.empty();
+	}
+
+	private static void cacheApiLocation(Path locationPath, String apiUrl) {
+		try {
+			Files.write(locationPath, apiUrl.getBytes(UTF_8));
+			log(DEBUG, "Cached API location to: " + locationPath);
+		} catch (IOException e) {
+			log(WARNING, "Failed to cache API location: " + e);
+		}
+	}
+
 	private static APIMetadata fetchAPIMetadata(String apiUrl) {
 		if (apiUrl == null || apiUrl.isEmpty()) {
 			log(ERROR, "No authentication server specified");
@@ -132,6 +202,8 @@ public final class AuthlibInjector {
 		warnIfHttp(apiUrl);
 
 		String metadataResponse;
+		Path cachePath = getMetadataCachePath(apiUrl);
+		Path locationCachePath = getMetadataCacheLocationPath(apiUrl);
 
 		Optional<String> prefetched = getPrefetchedResponse();
 		if (prefetched.isPresent()) {
@@ -175,9 +247,27 @@ public final class AuthlibInjector {
 				try (InputStream in = connection.getInputStream()) {
 					metadataResponse = asString(asBytes(in));
 				}
+				
+				log(INFO, "Successfully fetched metadata from API server");
+				
 			} catch (IOException e) {
 				log(ERROR, "Failed to fetch metadata: " + e);
-				throw new InitializationException(e);
+				
+				// Try to use cached metadata as fallback
+				Optional<String> cached = getCachedMetadata(cachePath);
+				if (cached.isPresent()) {
+					log(WARNING, "Using cached metadata as fallback due to offline API");
+					metadataResponse = cached.get();
+					// Also try to use cached API location
+					Optional<String> cachedLocation = getCachedApiLocation(locationCachePath);
+					if (cachedLocation.isPresent()) {
+						apiUrl = cachedLocation.get();
+						log(INFO, "Using cached API location: " + apiUrl);
+					}
+				} else {
+					log(ERROR, "No cached metadata available, initialization failed");
+					throw new InitializationException(e);
+				}
 			}
 
 		}
@@ -197,6 +287,12 @@ public final class AuthlibInjector {
 					+ metadataResponse);
 			throw new InitializationException(e);
 		}
+		
+		// Cache the metadata only if it's valid (successfully parsed)
+		cacheMetadata(cachePath, metadataResponse);
+		// Also cache the final API location (with trailing slash)
+		cacheApiLocation(locationCachePath, apiUrl);
+		
 		log(DEBUG, "Parsed metadata: " + metadata);
 		return metadata;
 	}

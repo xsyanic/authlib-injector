@@ -34,7 +34,6 @@ public class DefaultURLRedirector implements URLRedirector {
 
 	private void initDomainMapping() {
 		domainMapping.put("api.mojang.com", "api");
-		domainMapping.put("authserver.mojang.com", "authserver");
 		domainMapping.put("sessionserver.mojang.com", "sessionserver");
 		domainMapping.put("skins.minecraft.net", "skins");
 		domainMapping.put("api.minecraftservices.com", "minecraftservices");
@@ -47,7 +46,22 @@ public class DefaultURLRedirector implements URLRedirector {
 			return Optional.empty();
 		}
 
+		// For sessionserver, only proxy the profile endpoint
+		if ("sessionserver".equals(subdirectory)) {
+			if (isProfileEndpoint(path)) {
+				return Optional.of(apiRoot + subdirectory + path);
+			}
+			// Other sessionserver endpoints (join, hasJoined) are not redirected
+			return Optional.empty();
+		}
+
 		return Optional.of(apiRoot + subdirectory + path);
+	}
+
+	private boolean isProfileEndpoint(String path) {
+		// Match /session/minecraft/profile/{uuid} and /session/minecraft/profile/{uuid}?...
+		// UUIDs are 32 hex digits (case-insensitive) with optional hyphens
+		return path.matches("/session/minecraft/profile/[a-fA-F0-9\\-]+.*");
 	}
 
 }
